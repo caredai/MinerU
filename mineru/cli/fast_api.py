@@ -11,6 +11,7 @@ import glob
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.security import HTTPBearer
 from starlette.background import BackgroundTask
 from typing import List, Optional
 from loguru import logger
@@ -64,6 +65,20 @@ def create_app():
 app = create_app()
 
 
+# --- API Key Authentication ---
+security = HTTPBearer(auto_error=False)
+
+async def verify_api_key(token: Optional[str] = Depends(security)):
+    """Dependency to verify bearer token"""
+    API_KEY = os.getenv("MINERU_API_KEY")
+    if API_KEY:
+        if token is None:
+            raise HTTPException(status_code=401, detail="Authentication required: Please provide an API key as a Bearer token.")
+        if token.credentials != API_KEY:
+            raise HTTPException(status_code=403, detail="Invalid API Key provided.")
+# --- End API Key Authentication ---
+
+
 def sanitize_filename(filename: str) -> str:
     """
     格式化压缩文件的文件名
@@ -99,7 +114,7 @@ def get_infer_result(file_suffix_identifier: str, pdf_name: str, parse_dir: str)
     return None
 
 
-@app.post(path="/file_parse", dependencies=[Depends(limit_concurrency)])
+@app.post(path="/file_parse", dependencies=[Depends(limit_concurrency), Depends(verify_api_key)])
 async def parse_pdf(
         files: List[UploadFile] = File(..., description="Upload pdf or image files for parsing"),
         output_dir: str = Form("./output", description="Output local directory"),
@@ -315,9 +330,14 @@ Options: ch, ch_server, ch_lite, en, korean, japan, chinese_cht, ta, te, ka, th,
 @click.option('--host', default='127.0.0.1', help='Server host (default: 127.0.0.1)')
 @click.option('--port', default=8000, type=int, help='Server port (default: 8000)')
 @click.option('--reload', is_flag=True, help='Enable auto-reload (development mode)')
-def main(ctx, host, port, reload, **kwargs):
+@click.option('--api-key', default=os.getenv("MINERU_API_KEY"), help='API key for server authentication. If set, all requests must include a valid Bearer token.')
+def main(ctx, host, port, reload, api_key, **kwargs):
 
     kwargs.update(arg_parse(ctx))
+
+    # 如果提供了 api-key，设置环境变量，以便重载时也能生效
+    if api_key:
+        os.environ["MINERU_API_KEY"] = api_key
 
     # 将配置参数存储到应用状态中
     app.state.config = kwargs
